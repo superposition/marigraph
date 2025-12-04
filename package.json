@@ -1,0 +1,40 @@
+{
+  "name": "marigraph",
+  "version": "0.1.0",
+  "description": "Terminal-based volatility surface visualization and risk oracle",
+  "module": "src/tui/index.tsx",
+  "type": "module",
+  "bin": {
+    "marigraph": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/tui/index.tsx",
+    "dev": "bun --watch run src/tui/index.tsx",
+    "cli": "bun run src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.2.7"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "ink": "^6.5.1",
+    "react": "^19.2.1",
+    "yaml": "^2.8.2"
+  },
+  "keywords": [
+    "volatility",
+    "options",
+    "terminal",
+    "tui",
+    "surface",
+    "risk",
+    "visualization"
+  ],
+  "author": "",
+  "license": "MIT"
+}
