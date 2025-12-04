@@ -19,6 +19,17 @@ export interface RenderLine {
   depth: number // average depth for z-ordering
   style: 'wireframe' | 'axis' | 'grid' | 'surface'
   zValue?: number // normalized z-value for height-based coloring (-1 to 1)
+  normal?: { x: number; y: number; z: number } // surface normal for lighting
+  lighting?: number // computed lighting intensity 0-1
+}
+
+export interface LightSource {
+  x: number
+  y: number
+  z: number
+  intensity: number
+  ambient: number  // ambient light level 0-1
+  specular: number // specular highlight strength 0-1
 }
 
 export interface RenderLabel {
@@ -116,16 +127,107 @@ export function renderGrid(proj: Projection, divisions = 4): RenderLine[] {
 }
 
 /**
- * Render surface mesh lines from normalized points
+ * Calculate surface normal at a point using neighboring points
+ */
+function calculateNormal(
+  points: Point3D[][],
+  i: number,
+  j: number
+): { x: number; y: number; z: number } {
+  const rows = points.length
+  const cols = points[0]?.length || 0
+  const p = points[i]![j]!
+
+  // Get neighboring points for gradient calculation
+  const left = j > 0 ? points[i]![j - 1]! : p
+  const right = j < cols - 1 ? points[i]![j + 1]! : p
+  const up = i > 0 ? points[i - 1]![j]! : p
+  const down = i < rows - 1 ? points[i + 1]![j]! : p
+
+  // Calculate tangent vectors
+  const tx = { x: right.x - left.x, y: right.y - left.y, z: right.z - left.z }
+  const ty = { x: down.x - up.x, y: down.y - up.y, z: down.z - up.z }
+
+  // Cross product for normal
+  const nx = ty.y * tx.z - ty.z * tx.y
+  const ny = ty.z * tx.x - ty.x * tx.z
+  const nz = ty.x * tx.y - ty.y * tx.x
+
+  // Normalize
+  const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1
+  return { x: nx / len, y: ny / len, z: nz / len }
+}
+
+/**
+ * Compute lighting intensity using Phong shading model
+ */
+function computeLighting(
+  normal: { x: number; y: number; z: number },
+  point: Point3D,
+  light: LightSource,
+  viewDir: { x: number; y: number; z: number }
+): number {
+  // Light direction (from point to light)
+  const lx = light.x - point.x
+  const ly = light.y - point.y
+  const lz = light.z - point.z
+  const lLen = Math.sqrt(lx * lx + ly * ly + lz * lz) || 1
+  const lightDir = { x: lx / lLen, y: ly / lLen, z: lz / lLen }
+
+  // Diffuse lighting (Lambert)
+  const diffuse = Math.max(0, normal.x * lightDir.x + normal.y * lightDir.y + normal.z * lightDir.z)
+
+  // Specular lighting (Phong)
+  // Reflect light direction around normal
+  const dot = 2 * (normal.x * lightDir.x + normal.y * lightDir.y + normal.z * lightDir.z)
+  const reflectDir = {
+    x: dot * normal.x - lightDir.x,
+    y: dot * normal.y - lightDir.y,
+    z: dot * normal.z - lightDir.z,
+  }
+
+  const specDot = Math.max(0, reflectDir.x * viewDir.x + reflectDir.y * viewDir.y + reflectDir.z * viewDir.z)
+  const specular = Math.pow(specDot, 16) * light.specular // shininess = 16
+
+  // Combine: ambient + diffuse + specular
+  const intensity = light.ambient + (1 - light.ambient) * diffuse * light.intensity + specular
+
+  return Math.min(1, Math.max(0, intensity))
+}
+
+/**
+ * Default light source (top-right-front)
+ */
+export const DEFAULT_LIGHT: LightSource = {
+  x: 2,
+  y: -2,
+  z: 3,
+  intensity: 1.0,
+  ambient: 0.15,
+  specular: 0.4,
+}
+
+/**
+ * Render surface mesh lines from normalized points with lighting
  * Points should be in [-1, 1] range
  */
 export function renderSurfaceMesh(
   points: Point3D[][],
-  proj: Projection
+  proj: Projection,
+  light: LightSource = DEFAULT_LIGHT
 ): RenderLine[] {
   const lines: RenderLine[] = []
   const rows = points.length
   const cols = points[0]?.length || 0
+
+  // View direction (from camera)
+  const azRad = (proj.azimuth * Math.PI) / 180
+  const elRad = (proj.elevation * Math.PI) / 180
+  const viewDir = {
+    x: -Math.cos(elRad) * Math.sin(azRad),
+    y: -Math.sin(elRad),
+    z: -Math.cos(elRad) * Math.cos(azRad),
+  }
 
   // Horizontal lines (along columns)
   for (let i = 0; i < rows; i++) {
@@ -134,6 +236,14 @@ export function renderSurfaceMesh(
       const p2 = points[i]![j + 1]!
       const s1 = project3D(p1, proj)
       const s2 = project3D(p2, proj)
+
+      // Calculate normal at midpoint
+      const midI = i
+      const midJ = Math.min(j, cols - 2)
+      const normal = calculateNormal(points, midI, midJ)
+      const midPoint = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2, z: (p1.z + p2.z) / 2 }
+      const lighting = computeLighting(normal, midPoint, light, viewDir)
+
       lines.push({
         x1: s1.x,
         y1: s1.y,
@@ -141,7 +251,9 @@ export function renderSurfaceMesh(
         y2: s2.y,
         depth: (s1.depth + s2.depth) / 2,
         style: 'surface',
-        zValue: (p1.z + p2.z) / 2, // average z for height-based coloring
+        zValue: (p1.z + p2.z) / 2,
+        normal,
+        lighting,
       })
     }
   }
@@ -153,6 +265,14 @@ export function renderSurfaceMesh(
       const p2 = points[i + 1]![j]!
       const s1 = project3D(p1, proj)
       const s2 = project3D(p2, proj)
+
+      // Calculate normal at midpoint
+      const midI = Math.min(i, rows - 2)
+      const midJ = j
+      const normal = calculateNormal(points, midI, midJ)
+      const midPoint = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2, z: (p1.z + p2.z) / 2 }
+      const lighting = computeLighting(normal, midPoint, light, viewDir)
+
       lines.push({
         x1: s1.x,
         y1: s1.y,
@@ -160,7 +280,9 @@ export function renderSurfaceMesh(
         y2: s2.y,
         depth: (s1.depth + s2.depth) / 2,
         style: 'surface',
-        zValue: (p1.z + p2.z) / 2, // average z for height-based coloring
+        zValue: (p1.z + p2.z) / 2,
+        normal,
+        lighting,
       })
     }
   }

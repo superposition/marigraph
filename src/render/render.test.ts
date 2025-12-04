@@ -49,7 +49,7 @@ describe('3D Projection', () => {
     expect(proj.elevation).toBe(30)
     expect(proj.centerX).toBe(50)
     expect(proj.centerY).toBe(40)
-    expect(proj.zoom).toBe(24) // Math.min(100, 80) * 0.3
+    expect(proj.zoom).toBe(32) // default 3.2x zoom
   })
 
   it('should project origin to center', () => {

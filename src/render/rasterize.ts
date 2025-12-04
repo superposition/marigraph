@@ -263,6 +263,75 @@ export function getHeightChar(zValue: number): string {
 }
 
 /**
+ * Get color with lighting applied - combines height color with lighting intensity
+ * Creates realistic shading with shadows and highlights
+ */
+export function getLitColor(zValue: number, lighting: number): string {
+  const normalized = (zValue + 1) / 2
+
+  // Very dark (shadow) areas
+  if (lighting < 0.2) {
+    if (normalized < 0.4) return 'black'
+    return 'gray'
+  }
+
+  // Dark areas
+  if (lighting < 0.35) {
+    if (normalized < 0.25) return 'gray'
+    if (normalized < 0.50) return 'blue'
+    if (normalized < 0.75) return 'cyan'
+    return 'green'
+  }
+
+  // Medium lit areas - full color range
+  if (lighting < 0.6) {
+    if (normalized < 0.15) return 'blue'
+    if (normalized < 0.30) return 'cyan'
+    if (normalized < 0.50) return 'green'
+    if (normalized < 0.70) return 'yellow'
+    if (normalized < 0.85) return 'magenta'
+    return 'red'
+  }
+
+  // Bright areas
+  if (lighting < 0.8) {
+    if (normalized < 0.20) return 'cyan'
+    if (normalized < 0.40) return 'green'
+    if (normalized < 0.60) return 'yellow'
+    if (normalized < 0.80) return 'magenta'
+    return 'red'
+  }
+
+  // Specular highlights
+  if (normalized < 0.3) return 'cyan'
+  if (normalized < 0.5) return 'yellow'
+  if (normalized < 0.7) return 'magenta'
+  if (normalized < 0.9) return 'red'
+  return 'white'
+}
+
+/**
+ * Get character with lighting applied - brighter areas get denser characters
+ */
+export function getLitChar(zValue: number, lighting: number): string {
+  const normalized = (zValue + 1) / 2
+
+  // Combine height and lighting for character selection
+  const combined = normalized * 0.4 + lighting * 0.6
+
+  // Shadow characters
+  if (combined < 0.15) return ' '
+  if (combined < 0.25) return '·'
+  if (combined < 0.35) return '∙'
+  if (combined < 0.45) return ':'
+  if (combined < 0.55) return '░'
+  if (combined < 0.65) return '▒'
+  if (combined < 0.75) return '▓'
+  if (combined < 0.88) return '█'
+  return '▀' // specular highlight
+}
+
+/**
  * Get character based on depth for shading effect
  */
 export function getDepthChar(depth: number, minDepth: number, maxDepth: number, style: string): string {
@@ -300,9 +369,9 @@ export function rasterizeCubeFrame(
   frame: CubeFrame,
   width: number,
   height: number,
-  options: { colorBySurface?: boolean } = {}
+  options: { colorBySurface?: boolean; useLighting?: boolean } = {}
 ): RasterBuffer {
-  const { colorBySurface = true } = options
+  const { colorBySurface = true, useLighting = true } = options
   const buf = createBuffer(width, height)
 
   // Scale factor to fit frame into buffer
@@ -323,9 +392,15 @@ export function rasterizeCubeFrame(
     let color: string
 
     if (line.style === 'surface' && colorBySurface && line.zValue !== undefined) {
-      // Use height-based coloring for surface lines
-      char = getHeightChar(line.zValue)
-      color = getHeightColor(line.zValue)
+      if (useLighting && line.lighting !== undefined) {
+        // Use ray-traced lighting for realistic shading
+        char = getLitChar(line.zValue, line.lighting)
+        color = getLitColor(line.zValue, line.lighting)
+      } else {
+        // Fallback to height-based coloring
+        char = getHeightChar(line.zValue)
+        color = getHeightColor(line.zValue)
+      }
     } else {
       char = getLineChar(line.style)
       color = getStyleColor(line.style)

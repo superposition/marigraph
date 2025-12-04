@@ -142,6 +142,139 @@ flowchart LR
     Score -->|RISK_THRESHOLD| Alerts
 ```
 
+### On-Chain Oracle Architecture
+
+```mermaid
+flowchart TB
+    subgraph OffChain["Off-Chain (Marigraph TUI)"]
+        TUI[Terminal UI]
+        Surface[Volatility Surface]
+        Metrics[Risk Metrics Engine]
+    end
+
+    subgraph Uniswap["Uniswap v4"]
+        PM[PoolManager]
+        Hook[VolatilityHook]
+    end
+
+    subgraph Oracle["Volatility Oracle System"]
+        VO[VolatilityOracle.sol]
+        VM[VolatilityMath.sol]
+        VK[VolatilityKeeper.sol]
+    end
+
+    subgraph Chainlink["Chainlink Automation"]
+        CK[ChainlinkVolatilityKeeper]
+        Registry[Keeper Registry]
+        Nodes[Automation Nodes]
+    end
+
+    subgraph Consumers["On-Chain Consumers"]
+        Vaults[Vault Strategies]
+        Options[Options Protocols]
+        Risk[Risk Managers]
+    end
+
+    TUI --> Surface
+    Surface --> Metrics
+    Metrics -->|Display| TUI
+
+    PM -->|Pool State| Hook
+    PM -->|sqrtPriceX96, liquidity| VK
+
+    Hook -->|beforeSwap/afterSwap| VO
+    VK -->|update()| VO
+    VO --> VM
+
+    CK -->|checkUpkeep| Nodes
+    Nodes -->|performUpkeep| CK
+    CK -->|update()| VO
+    Registry -->|LINK| CK
+
+    VO -->|getLatestSnapshot()| Consumers
+    VO -->|getRiskScore()| Consumers
+    VO -->|getVolSmile()| Consumers
+```
+
+### Oracle Data Payload
+
+```mermaid
+flowchart LR
+    subgraph Input["Pool Data"]
+        Price[sqrtPriceX96]
+        Liq[Tick Liquidity<br/>21 samples]
+        Tick[Current Tick]
+    end
+
+    subgraph Computed["Computed Metrics"]
+        RV[Realized Vol<br/>uint128]
+        IV[Implied Vol<br/>uint128]
+        VRP[Vol Risk Premium<br/>int128]
+        Skew[25Δ Skew<br/>int128]
+        Term[Term Structure<br/>int128]
+        Risk[Risk Score<br/>uint128]
+    end
+
+    subgraph Snapshot["VolatilitySnapshot"]
+        S[timestamp<br/>blockNumber<br/>realizedVol<br/>impliedVol<br/>volRiskPremium<br/>skew25Delta<br/>termStructure<br/>atmIV<br/>riskScore]
+    end
+
+    Price --> RV
+    Price --> IV
+    Liq --> IV
+    Liq --> Skew
+    Tick --> Term
+
+    RV --> VRP
+    IV --> VRP
+
+    RV --> Risk
+    IV --> Risk
+    Skew --> Risk
+    Term --> Risk
+
+    RV --> S
+    IV --> S
+    VRP --> S
+    Skew --> S
+    Term --> S
+    Risk --> S
+```
+
+### Chainlink Automation Flow
+
+```mermaid
+sequenceDiagram
+    participant Nodes as Chainlink Nodes
+    participant Keeper as ChainlinkVolatilityKeeper
+    participant Pool as Uniswap v4 Pool
+    participant Oracle as VolatilityOracle
+
+    loop Every Block
+        Nodes->>Keeper: checkUpkeep()
+        Keeper->>Keeper: Check time elapsed
+        alt 5 minutes passed
+            Keeper-->>Nodes: (true, performData)
+        else Too soon
+            Keeper-->>Nodes: (false, "")
+        end
+    end
+
+    Nodes->>Keeper: performUpkeep(performData)
+    Keeper->>Pool: getSlot0(poolId)
+    Pool-->>Keeper: sqrtPriceX96, tick
+    Keeper->>Pool: getLiquidity(poolId)
+    Pool-->>Keeper: liquidity samples
+    Keeper->>Oracle: update(price, liquidity, ticks)
+    Oracle->>Oracle: Compute RV, IV, Skew, Risk
+    Oracle-->>Oracle: Store Snapshot
+    Oracle->>Oracle: Emit SnapshotUpdated
+
+    alt Risk > 70%
+        Oracle->>Oracle: Emit RiskAlert
+    end
+```
+
 ### Binary Frame Protocol
 
 ```mermaid

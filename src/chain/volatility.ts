@@ -39,6 +39,17 @@ export interface VolatilityPlaylist {
 }
 
 /**
+ * Seeded random number generator for reproducible surfaces
+ */
+function seededRandom(seed: number): () => number {
+  let s = seed
+  return () => {
+    s = (s * 1103515245 + 12345) & 0x7fffffff
+    return s / 0x7fffffff
+  }
+}
+
+/**
  * Create a mock volatility snapshot for demo purposes
  * In production, this would fetch real data from the chain
  */
@@ -48,6 +59,9 @@ export function createMockSnapshot(
   eventIndex: number = 0
 ): VolatilitySnapshot {
   const date = new Date(timestamp * 1000).toISOString().split('T')[0]!
+
+  // Seeded RNG for reproducible but varied surfaces
+  const rng = seededRandom(blockNumber)
 
   // Find matching event
   const event = VOLATILITY_EVENTS.find(e =>
@@ -80,50 +94,86 @@ export function createMockSnapshot(
     })
   }
 
-  // Generate volatility surface
-  const primaryPool = poolStates.get(3000)! // 0.3% fee tier
-  const tickData = generateTickData(
-    primaryPool.tick,
-    60, // tick spacing for 0.3%
-    ethPrice,
-    primaryPool.liquidity
-  )
+  // Generate a dramatically varied volatility surface
+  // Parameters that change per snapshot for visible differences
+  const baseVol = event?.severity === 'extreme' ? 0.8 + rng() * 0.4 :
+    event?.severity === 'high' ? 0.5 + rng() * 0.3 :
+    event?.severity === 'elevated' ? 0.35 + rng() * 0.2 :
+    0.15 + rng() * 0.15
 
-  // Adjust volatility based on event
-  const volMultiplier = event?.severity === 'extreme' ? 2.0 :
-    event?.severity === 'high' ? 1.5 :
-      event?.severity === 'elevated' ? 1.2 : 1.0
+  // Skew direction and magnitude (put skew vs call skew)
+  const skewDirection = event?.severity === 'extreme' ? -0.4 - rng() * 0.3 :
+    event?.severity === 'high' ? -0.25 - rng() * 0.2 :
+    (rng() - 0.5) * 0.3
 
+  // Smile curvature (wings)
+  const smileCurvature = event?.severity === 'extreme' ? 0.5 + rng() * 0.4 :
+    event?.severity === 'high' ? 0.3 + rng() * 0.3 :
+    0.1 + rng() * 0.2
+
+  // Term structure slope (contango vs backwardation)
+  const termSlope = event?.severity === 'extreme' ? -0.15 - rng() * 0.1 : // backwardation in crisis
+    event?.severity === 'high' ? -0.08 - rng() * 0.08 :
+    0.03 + rng() * 0.06 // normal contango
+
+  // Generate custom surface with these parameters
+  const nx = 25 // strikes
+  const ny = 6  // expiries
   const expiryDays = [1, 7, 14, 30, 60, 90]
-  const volSurface = buildVolatilitySurface(tickData, primaryPool.tick, expiryDays)
+  const strikes = new Float64Array(nx)
+  const expiries = new Float64Array(ny)
+  const ivs = new Float64Array(nx * ny)
 
-  // Apply event-based volatility multiplier
-  for (const row of volSurface) {
-    for (const point of row) {
-      point.impliedVol *= volMultiplier
+  // Strike range: 70% to 130% of spot
+  for (let i = 0; i < nx; i++) {
+    strikes[i] = 70 + (i / (nx - 1)) * 60 // 70 to 130
+  }
+
+  for (let j = 0; j < ny; j++) {
+    expiries[j] = expiryDays[j]!
+    const tte = expiryDays[j]! / 365
+
+    for (let i = 0; i < nx; i++) {
+      const moneyness = (strikes[i]! - 100) / 100 // -0.3 to +0.3
+
+      // Base IV with term structure
+      let iv = baseVol + termSlope * Math.sqrt(tte) * 2
+
+      // Add skew (asymmetric)
+      iv += skewDirection * moneyness
+
+      // Add smile (symmetric curvature)
+      iv += smileCurvature * moneyness * moneyness * 3
+
+      // Add some per-point noise for texture
+      iv += (rng() - 0.5) * 0.05
+
+      // Time decay on wings
+      const wingDecay = Math.abs(moneyness) > 0.15 ? (1 - tte * 0.3) : 1
+      iv *= wingDecay
+
+      // Clamp to reasonable range
+      iv = Math.max(0.05, Math.min(2.0, iv))
+
+      ivs[j * nx + i] = iv
     }
   }
 
-  // Convert to marigraph surface format
-  const surfaceData = toMarigraphSurface(volSurface, ethPrice)
-
   const surface = createSurface(
-    surfaceData.x,
-    surfaceData.y,
-    surfaceData.z,
-    surfaceData.nx,
-    surfaceData.ny,
+    strikes,
+    expiries,
+    ivs,
     {
-      xLabel: 'Strike %',
-      yLabel: 'Expiry (days)',
-      zLabel: 'IV',
-      title: `ETH Volatility Surface - ${date}`,
+      x: 'Strike %',
+      y: 'Expiry (days)',
+      z: 'IV',
     }
   )
 
-  // Calculate risk score based on volatility levels
-  const avgVol = surfaceData.z.reduce((a, b) => a + b, 0) / surfaceData.z.length
-  const riskScore = Math.min(1, avgVol / 1.5)
+  // Calculate risk score based on volatility levels and shape
+  const avgVol = Array.from(ivs).reduce((a, b) => a + b, 0) / ivs.length
+  const maxVol = Math.max(...Array.from(ivs))
+  const riskScore = Math.min(1, (avgVol * 0.6 + maxVol * 0.4) / 1.2)
 
   return {
     blockNumber,
