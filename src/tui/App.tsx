@@ -21,6 +21,16 @@ import {
   type ArbitrageOpportunity,
 } from '../oracle/risk.ts'
 import { sparkline } from '../column/widgets/Chart.tsx'
+import { Timeline, EventList } from './Timeline.tsx'
+import {
+  createPlaylist,
+  nextSnapshot,
+  prevSnapshot,
+  jumpToEvent,
+  type VolatilityPlaylist,
+  type VolatilitySnapshot,
+} from '../chain/volatility.ts'
+import { VOLATILITY_EVENTS } from '../chain/config.ts'
 
 // Ink color type
 type InkColor = 'black' | 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | 'white' | 'gray'
@@ -309,12 +319,12 @@ function StatusBar({ width }: { width: number }) {
   const time = new Date().toLocaleTimeString()
   return (
     <Box width={width} justifyContent="space-between" paddingX={1} borderStyle="double" borderColor="magenta">
-      <Text bold color="magenta">◆ MARIGRAPH ◆</Text>
+      <Text bold color="magenta">◆ UNISWAP v4 ◆</Text>
       <Text color="cyan">{time}</Text>
-      <Text color="blue">←↑↓→ rotate</Text>
-      <Text color="yellow">+/- zoom</Text>
-      <Text color="white">space pause</Text>
-      <Text color="green">r refresh</Text>
+      <Text color="blue">[/] seek</Text>
+      <Text color="green">p play</Text>
+      <Text color="yellow">1-5 events</Text>
+      <Text color="white">space rotate</Text>
       <Text color="red">q quit</Text>
     </Box>
   )
@@ -335,14 +345,21 @@ export function App() {
   const panelHeight = Math.floor(surfaceHeight / 3) // Stack 3 panels per side
 
   // State
-  const [surface, setSurface] = useState(() => generateDemoSurface())
+  const [playlist, setPlaylist] = useState<VolatilityPlaylist>(() => createPlaylist())
+  const [currentSnapshot, setCurrentSnapshot] = useState<VolatilitySnapshot | null>(() =>
+    playlist.snapshots[0] || null
+  )
+  const [surface, setSurface] = useState(() =>
+    currentSnapshot?.surface || generateDemoSurface()
+  )
   const [projection, setProjection] = useState(() =>
-    createProjection(centerWidth - 4, surfaceHeight - 4, { azimuth: 45, elevation: 30, zoom: 32 })
+    createProjection(centerWidth - 4, surfaceHeight - 8, { azimuth: 45, elevation: 30, zoom: 32 })
   )
   const [metrics, setMetrics] = useState<RiskMetrics | null>(null)
   const [arbitrage, setArbitrage] = useState<ArbitrageOpportunity[]>([])
-  const [alerts, setAlerts] = useState<string[]>(['◆ System online'])
+  const [alerts, setAlerts] = useState<string[]>(['◆ Uniswap v4 Volatility Surface'])
   const [paused, setPaused] = useState(false)
+  const [playlistPlaying, setPlaylistPlaying] = useState(false)
 
   // Compute metrics when surface changes
   useEffect(() => {
@@ -360,13 +377,35 @@ export function App() {
     }
   }, [surface])
 
-  // Regenerate surface periodically for demo
+  // Update surface when snapshot changes
   useEffect(() => {
+    if (currentSnapshot) {
+      setSurface(currentSnapshot.surface)
+      setAlerts(prev => {
+        const newAlert = currentSnapshot.eventName
+          ? `⚡ ${currentSnapshot.eventName} - ${currentSnapshot.date}`
+          : `Block ${currentSnapshot.blockNumber.toLocaleString()}`
+        return [...prev.slice(-10), newAlert]
+      })
+    }
+  }, [currentSnapshot])
+
+  // Playlist auto-advance when playing
+  useEffect(() => {
+    if (!playlistPlaying) return
     const interval = setInterval(() => {
-      setSurface(generateDemoSurface())
-    }, 3000)
+      setPlaylist(p => {
+        const next = nextSnapshot(p)
+        if (next) {
+          setCurrentSnapshot(next)
+        } else {
+          setPlaylistPlaying(false) // Stop at end
+        }
+        return { ...p }
+      })
+    }, playlist.playbackSpeed)
     return () => clearInterval(interval)
-  }, [])
+  }, [playlistPlaying, playlist.playbackSpeed])
 
   // Auto-rotate azimuth by 5 degrees (when not paused)
   useEffect(() => {
@@ -380,7 +419,39 @@ export function App() {
   // Keyboard controls
   useInput((input, key) => {
     if (input === 'q') exit()
-    if (input === ' ') setPaused(p => !p) // spacebar toggles pause
+    if (input === ' ') setPaused(p => !p) // spacebar toggles rotation pause
+    if (input === 'p') setPlaylistPlaying(p => !p) // p toggles playlist playback
+
+    // Playlist navigation with [ and ]
+    if (input === '[' || input === ',') {
+      setPlaylist(p => {
+        const prev = prevSnapshot(p)
+        if (prev) setCurrentSnapshot(prev)
+        return { ...p }
+      })
+    }
+    if (input === ']' || input === '.') {
+      setPlaylist(p => {
+        const next = nextSnapshot(p)
+        if (next) setCurrentSnapshot(next)
+        return { ...p }
+      })
+    }
+
+    // Jump to events with number keys
+    if (input >= '1' && input <= '5') {
+      const eventIndex = parseInt(input) - 1
+      const event = VOLATILITY_EVENTS[eventIndex]
+      if (event) {
+        setPlaylist(p => {
+          const snapshot = jumpToEvent(p, event.name)
+          if (snapshot) setCurrentSnapshot(snapshot)
+          return { ...p }
+        })
+      }
+    }
+
+    // Rotation controls
     if (key.leftArrow) setProjection(p => rotateProjection(p, -5, 0))
     if (key.rightArrow) setProjection(p => rotateProjection(p, 5, 0))
     if (key.upArrow) setProjection(p => rotateProjection(p, 0, 5))
@@ -390,8 +461,19 @@ export function App() {
     if (input === 'r') setSurface(generateDemoSurface())
   })
 
+  // Update playlist state for display
+  const displayPlaylist: VolatilityPlaylist = {
+    ...playlist,
+    isPlaying: playlistPlaying,
+  }
+
   return (
     <Box flexDirection="column" width={termWidth} height={termHeight}>
+      {/* Timeline at top */}
+      <Box borderStyle="round" borderColor="cyan" paddingX={1}>
+        <Timeline playlist={displayPlaylist} width={termWidth - 4} />
+      </Box>
+
       {/* Main content row - side panels stacked vertically, cube in center */}
       <Box flexGrow={1}>
         {/* Left side - stacked panels */}
@@ -406,7 +488,7 @@ export function App() {
           surface={surface}
           projection={projection}
           width={centerWidth}
-          height={surfaceHeight}
+          height={surfaceHeight - 6}
           paused={paused}
         />
 
